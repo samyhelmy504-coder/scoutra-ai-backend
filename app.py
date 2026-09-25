@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
+from google.genai.errors import ServerError
 
 
 # ==========================================
@@ -55,7 +56,7 @@ app.add_middleware(
 
 
 # ==========================================
-# Models
+# Request Model
 # ==========================================
 
 class ChatRequest(BaseModel):
@@ -117,24 +118,67 @@ def chat(request: ChatRequest):
 """
 
     # ======================================
-    # استدعاء Gemini مع تسجيل الخطأ الحقيقي
+    # المحاولة الأولى
+    # Gemini 3.6 Flash
     # ======================================
 
     try:
+
+        print("Trying Gemini 3.6 Flash...")
 
         response = client.models.generate_content(
             model="gemini-3.6-flash",
             contents=prompt,
         )
 
+        print("Gemini 3.6 Flash succeeded.")
+
         return {
             "success": True,
+            "model": "gemini-3.6-flash",
             "reply": response.text,
         }
 
+    except ServerError as e:
+
+        print("Gemini 3.6 Flash Server Error:")
+        print(repr(e))
+
+        # ==================================
+        # لو Gemini 3.6 غير متاح مؤقتًا
+        # نجرب Gemini 3.5 Flash-Lite
+        # ==================================
+
+        if getattr(e, "code", None) == 503:
+
+            try:
+
+                print("Falling back to Gemini 3.5 Flash-Lite...")
+
+                response = client.models.generate_content(
+                    model="gemini-3.5-flash-lite",
+                    contents=prompt,
+                )
+
+                print("Gemini 3.5 Flash-Lite succeeded.")
+
+                return {
+                    "success": True,
+                    "model": "gemini-3.5-flash-lite",
+                    "reply": response.text,
+                }
+
+            except Exception as fallback_error:
+
+                print("Fallback Gemini Error:")
+                print(repr(fallback_error))
+
+                raise
+
+        raise
+
     except Exception as e:
 
-        # إظهار الخطأ الحقيقي في Vercel Logs
         print("========================================")
         print("GEMINI ERROR:")
         print(repr(e))
