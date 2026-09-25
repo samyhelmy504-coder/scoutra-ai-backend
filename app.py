@@ -119,7 +119,7 @@ def chat(request: ChatRequest):
 """
 
     # ======================================
-    # المحاولة الأولى
+    # Gemini 3.6 Flash
     # ======================================
 
     try:
@@ -146,33 +146,65 @@ def chat(request: ChatRequest):
         print("Gemini 3.6 Flash failed:")
         print(error_text)
 
-        # ==================================
-        # Fallback عند 503
-        # ==================================
-
         if "503" in error_text or "UNAVAILABLE" in error_text:
+
+            # ==================================
+            # Gemini 3.5 Flash
+            # ==================================
 
             try:
 
-                print("Trying Gemini 3.1 Flash-Lite...")
+                print("Trying Gemini 3.5 Flash...")
 
                 response = client.models.generate_content(
-                    model="gemini-3.1-flash-lite",
+                    model="gemini-3.5-flash",
                     contents=prompt,
                 )
 
-                print("Gemini 3.1 Flash-Lite succeeded.")
+                print("Gemini 3.5 Flash succeeded.")
 
                 return {
                     "success": True,
-                    "model": "gemini-3.1-flash-lite",
+                    "model": "gemini-3.5-flash",
                     "reply": response.text,
                 }
 
-            except Exception as fallback_error:
+            except ServerError as second_error:
 
-                print("Fallback model failed:")
-                print(repr(fallback_error))
+                second_error_text = str(second_error)
+
+                print("Gemini 3.5 Flash failed:")
+                print(second_error_text)
+
+                if "503" in second_error_text or "UNAVAILABLE" in second_error_text:
+
+                    # ==================================
+                    # Gemini 3.1 Flash-Lite
+                    # ==================================
+
+                    try:
+
+                        print("Trying Gemini 3.1 Flash-Lite...")
+
+                        response = client.models.generate_content(
+                            model="gemini-3.1-flash-lite",
+                            contents=prompt,
+                        )
+
+                        print("Gemini 3.1 Flash-Lite succeeded.")
+
+                        return {
+                            "success": True,
+                            "model": "gemini-3.1-flash-lite",
+                            "reply": response.text,
+                        }
+
+                    except Exception as fallback_error:
+
+                        print("Gemini 3.1 Flash-Lite failed:")
+                        print(repr(fallback_error))
+
+                        raise
 
                 raise
 
@@ -185,4 +217,4 @@ def chat(request: ChatRequest):
         print(repr(e))
         print("========================================")
 
-        raiseٍٍ
+        raise
