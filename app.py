@@ -8,7 +8,7 @@ from google import genai
 
 
 # ==========================================
-# تحميل الإعدادات
+# تحميل متغيرات البيئة
 # ==========================================
 
 load_dotenv()
@@ -17,7 +17,7 @@ api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
     raise ValueError(
-        "GEMINI_API_KEY غير موجود في ملف .env"
+        "GEMINI_API_KEY غير موجود في متغيرات البيئة أو ملف .env"
     )
 
 
@@ -42,7 +42,7 @@ app = FastAPI(
 
 
 # ==========================================
-# السماح لتطبيق Flutter بالاتصال
+# CORS
 # ==========================================
 
 app.add_middleware(
@@ -55,7 +55,7 @@ app.add_middleware(
 
 
 # ==========================================
-# شكل الرسالة القادمة من Flutter
+# Models
 # ==========================================
 
 class ChatRequest(BaseModel):
@@ -75,7 +75,7 @@ def home():
 
 
 # ==========================================
-# فحص حالة الـ Backend
+# Health Check
 # ==========================================
 
 @app.get("/health")
@@ -87,7 +87,7 @@ def health():
 
 
 # ==========================================
-# SCOUTRA AI
+# SCOUTRA AI Chat
 # ==========================================
 
 @app.post("/chat")
@@ -116,12 +116,28 @@ def chat(request: ChatRequest):
 {request.message}
 """
 
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=prompt,
-    )
+    # ======================================
+    # استدعاء Gemini مع تسجيل الخطأ الحقيقي
+    # ======================================
 
-    return {
-        "success": True,
-        "reply": response.text,
-    }
+    try:
+
+        response = client.models.generate_content(
+            model="gemini-3.6-flash",
+            contents=prompt,
+        )
+
+        return {
+            "success": True,
+            "reply": response.text,
+        }
+
+    except Exception as e:
+
+        # إظهار الخطأ الحقيقي في Vercel Logs
+        print("========================================")
+        print("GEMINI ERROR:")
+        print(repr(e))
+        print("========================================")
+
+        raise
