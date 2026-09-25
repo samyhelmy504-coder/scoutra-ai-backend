@@ -9,7 +9,7 @@ from google.genai.errors import ServerError
 
 
 # ==========================================
-# تحميل متغيرات البيئة
+# Environment
 # ==========================================
 
 load_dotenv()
@@ -18,12 +18,12 @@ api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
     raise ValueError(
-        "GEMINI_API_KEY غير موجود في متغيرات البيئة أو ملف .env"
+        "GEMINI_API_KEY غير موجود في متغيرات البيئة"
     )
 
 
 # ==========================================
-# الاتصال بـ Gemini
+# Gemini Client
 # ==========================================
 
 client = genai.Client(
@@ -32,7 +32,7 @@ client = genai.Client(
 
 
 # ==========================================
-# إنشاء SCOUTRA AI Backend
+# FastAPI
 # ==========================================
 
 app = FastAPI(
@@ -56,7 +56,7 @@ app.add_middleware(
 
 
 # ==========================================
-# Request Model
+# Request
 # ==========================================
 
 class ChatRequest(BaseModel):
@@ -64,7 +64,7 @@ class ChatRequest(BaseModel):
 
 
 # ==========================================
-# الصفحة الرئيسية
+# Home
 # ==========================================
 
 @app.get("/")
@@ -76,7 +76,7 @@ def home():
 
 
 # ==========================================
-# Health Check
+# Health
 # ==========================================
 
 @app.get("/health")
@@ -88,7 +88,7 @@ def health():
 
 
 # ==========================================
-# SCOUTRA AI Chat
+# Chat
 # ==========================================
 
 @app.post("/chat")
@@ -97,8 +97,9 @@ def chat(request: ChatRequest):
     prompt = f"""
 أنت SCOUTRA AI.
 
-أنت مساعد ذكي متخصص في مجال الكشافة،
-ومهمتك مساعدة الكشافين والقادة في:
+أنت مساعد ذكي متخصص في مجال الكشافة.
+
+مهمتك مساعدة الكشافين والقادة في:
 
 - المهارات الكشفية
 - الرحلات والخلوات
@@ -119,7 +120,6 @@ def chat(request: ChatRequest):
 
     # ======================================
     # المحاولة الأولى
-    # Gemini 3.6 Flash
     # ======================================
 
     try:
@@ -141,36 +141,37 @@ def chat(request: ChatRequest):
 
     except ServerError as e:
 
-        print("Gemini 3.6 Flash Server Error:")
-        print(repr(e))
+        error_text = str(e)
+
+        print("Gemini 3.6 Flash failed:")
+        print(error_text)
 
         # ==================================
-        # لو Gemini 3.6 غير متاح مؤقتًا
-        # نجرب Gemini 3.5 Flash-Lite
+        # Fallback عند 503
         # ==================================
 
-        if getattr(e, "code", None) == 503:
+        if "503" in error_text or "UNAVAILABLE" in error_text:
 
             try:
 
-                print("Falling back to Gemini 3.5 Flash-Lite...")
+                print("Trying Gemini 3.1 Flash-Lite...")
 
                 response = client.models.generate_content(
-                    model="gemini-3.5-flash-lite",
+                    model="gemini-3.1-flash-lite",
                     contents=prompt,
                 )
 
-                print("Gemini 3.5 Flash-Lite succeeded.")
+                print("Gemini 3.1 Flash-Lite succeeded.")
 
                 return {
                     "success": True,
-                    "model": "gemini-3.5-flash-lite",
+                    "model": "gemini-3.1-flash-lite",
                     "reply": response.text,
                 }
 
             except Exception as fallback_error:
 
-                print("Fallback Gemini Error:")
+                print("Fallback model failed:")
                 print(repr(fallback_error))
 
                 raise
@@ -184,4 +185,4 @@ def chat(request: ChatRequest):
         print(repr(e))
         print("========================================")
 
-        raise
+        raiseٍٍ
