@@ -3,9 +3,11 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
 from google import genai
-from google.genai.errors import ServerError
+from google.genai import types
 
 
 # ==========================================
@@ -26,8 +28,17 @@ if not api_key:
 # Gemini Client
 # ==========================================
 
+# مهم:
+# نقلل الـ automatic retries من SDK
+# عشان لو موديل فشل ننتقل بسرعة للموديل التالي.
 client = genai.Client(
     api_key=api_key,
+    http_options=types.HttpOptions(
+        timeout=9000,
+        retry_options=types.HttpRetryOptions(
+            attempts=1,
+        ),
+    ),
 )
 
 
@@ -88,6 +99,29 @@ def health():
 
 
 # ==========================================
+# Gemini Request
+# ==========================================
+
+def ask_gemini(model: str, prompt: str):
+
+    print(f"Trying {model}...")
+
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+    )
+
+    if not response.text:
+        raise Exception(
+            f"{model} أرسل استجابة فارغة"
+        )
+
+    print(f"{model} succeeded.")
+
+    return response.text
+
+
+# ==========================================
 # Chat
 # ==========================================
 
@@ -119,102 +153,68 @@ def chat(request: ChatRequest):
 """
 
     # ======================================
-    # Gemini 3.6 Flash
+    # Fallback Models
     # ======================================
 
-    try:
+    models = [
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+    ]
 
-        print("Trying Gemini 3.6 Flash...")
+    errors = []
 
-        response = client.models.generate_content(
-            model="gemini-3.6-flash",
-            contents=prompt,
-        )
+    # ======================================
+    # Try models one by one
+    # ======================================
 
-        print("Gemini 3.6 Flash succeeded.")
+    for model in models:
 
-        return {
-            "success": True,
-            "model": "gemini-3.6-flash",
-            "reply": response.text,
-        }
+        try:
 
-    except ServerError as e:
+            reply = ask_gemini(
+                model=model,
+                prompt=prompt,
+            )
 
-        error_text = str(e)
+            return {
+                "success": True,
+                "model": model,
+                "reply": reply,
+            }
 
-        print("Gemini 3.6 Flash failed:")
-        print(error_text)
+        except Exception as e:
 
-        if "503" in error_text or "UNAVAILABLE" in error_text:
+            error_text = str(e)
 
-            # ==================================
-            # Gemini 3.5 Flash
-            # ==================================
+            print("========================================")
+            print(f"{model} FAILED")
+            print(error_text)
+            print("========================================")
 
-            try:
-
-                print("Trying Gemini 3.5 Flash...")
-
-                response = client.models.generate_content(
-                    model="gemini-3.5-flash",
-                    contents=prompt,
-                )
-
-                print("Gemini 3.5 Flash succeeded.")
-
-                return {
-                    "success": True,
-                    "model": "gemini-3.5-flash",
-                    "reply": response.text,
+            errors.append(
+                {
+                    "model": model,
+                    "error": error_text,
                 }
+            )
 
-            except ServerError as second_error:
+            # ننتقل فورًا للموديل التالي
+            continue
 
-                second_error_text = str(second_error)
+    # ======================================
+    # All models failed
+    # ======================================
 
-                print("Gemini 3.5 Flash failed:")
-                print(second_error_text)
+    print("========================================")
+    print("ALL GEMINI MODELS FAILED")
+    print(errors)
+    print("========================================")
 
-                if "503" in second_error_text or "UNAVAILABLE" in second_error_text:
-
-                    # ==================================
-                    # Gemini 3.1 Flash-Lite
-                    # ==================================
-
-                    try:
-
-                        print("Trying Gemini 3.1 Flash-Lite...")
-
-                        response = client.models.generate_content(
-                            model="gemini-3.1-flash-lite",
-                            contents=prompt,
-                        )
-
-                        print("Gemini 3.1 Flash-Lite succeeded.")
-
-                        return {
-                            "success": True,
-                            "model": "gemini-3.1-flash-lite",
-                            "reply": response.text,
-                        }
-
-                    except Exception as fallback_error:
-
-                        print("Gemini 3.1 Flash-Lite failed:")
-                        print(repr(fallback_error))
-
-                        raise
-
-                raise
-
-        raise
-
-    except Exception as e:
-
-        print("========================================")
-        print("GEMINI ERROR:")
-        print(repr(e))
-        print("========================================")
-
-        raise
+    return JSONResponse(
+        status_code=503,
+        content={
+            "success": False,
+            "error": "SCOUTRA AI مشغول حاليًا. حاول مرة أخرى بعد قليل.",
+        },
+    )
