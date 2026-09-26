@@ -28,9 +28,6 @@ if not api_key:
 # Gemini Client
 # ==========================================
 
-# مهم:
-# نقلل الـ automatic retries من SDK
-# عشان لو موديل فشل ننتقل بسرعة للموديل التالي.
 client = genai.Client(
     api_key=api_key,
     http_options=types.HttpOptions(
@@ -99,7 +96,7 @@ def health():
 
 
 # ==========================================
-# Gemini Request
+# Gemini
 # ==========================================
 
 def ask_gemini(model: str, prompt: str):
@@ -113,7 +110,7 @@ def ask_gemini(model: str, prompt: str):
 
     if not response.text:
         raise Exception(
-            f"{model} أرسل استجابة فارغة"
+            f"{model}: empty response"
         )
 
     print(f"{model} succeeded.")
@@ -152,10 +149,6 @@ def chat(request: ChatRequest):
 {request.message}
 """
 
-    # ======================================
-    # Fallback Models
-    # ======================================
-
     models = [
         "gemini-3.6-flash",
         "gemini-3.5-flash",
@@ -163,10 +156,6 @@ def chat(request: ChatRequest):
     ]
 
     errors = []
-
-    # ======================================
-    # Try models one by one
-    # ======================================
 
     for model in models:
 
@@ -192,18 +181,16 @@ def chat(request: ChatRequest):
             print(error_text)
             print("========================================")
 
-            errors.append(
-                {
-                    "model": model,
-                    "error": error_text,
-                }
-            )
+            # نخزن معلومات الخطأ بدون أي API Key
+            errors.append({
+                "model": model,
+                "error": error_text[:1000],
+            })
 
-            # ننتقل فورًا للموديل التالي
             continue
 
     # ======================================
-    # All models failed
+    # Diagnostic response
     # ======================================
 
     print("========================================")
@@ -215,6 +202,7 @@ def chat(request: ChatRequest):
         status_code=503,
         content={
             "success": False,
-            "error": "SCOUTRA AI مشغول حاليًا. حاول مرة أخرى بعد قليل.",
+            "error": "كل نماذج Gemini فشلت.",
+            "models": errors,
         },
     )
