@@ -31,7 +31,7 @@ if not api_key:
 client = genai.Client(
     api_key=api_key,
     http_options=types.HttpOptions(
-        timeout=9000,
+        timeout=10000,
         retry_options=types.HttpRetryOptions(
             attempts=1,
         ),
@@ -157,6 +157,10 @@ def chat(request: ChatRequest):
 
     errors = []
 
+    # ======================================
+    # Try models one by one
+    # ======================================
+
     for model in models:
 
         try:
@@ -181,7 +185,6 @@ def chat(request: ChatRequest):
             print(error_text)
             print("========================================")
 
-            # نخزن معلومات الخطأ بدون أي API Key
             errors.append({
                 "model": model,
                 "error": error_text[:1000],
@@ -190,7 +193,7 @@ def chat(request: ChatRequest):
             continue
 
     # ======================================
-    # Diagnostic response
+    # All models failed
     # ======================================
 
     print("========================================")
