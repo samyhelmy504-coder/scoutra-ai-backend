@@ -64,11 +64,20 @@ app.add_middleware(
 
 
 # ==========================================
-# Request
+# Request Models
 # ==========================================
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
 
 class ChatRequest(BaseModel):
     message: str
+
+    # سجل المحادثة السابقة
+    # اختياري حتى لا يتكسر الـAPI القديم
+    history: list[ChatMessage] = []
 
 
 # ==========================================
@@ -96,36 +105,10 @@ def health():
 
 
 # ==========================================
-# Gemini
+# SCOUTRA AI System Instructions
 # ==========================================
 
-def ask_gemini(model: str, prompt: str):
-
-    print(f"Trying {model}...")
-
-    response = client.models.generate_content(
-        model=model,
-        contents=prompt,
-    )
-
-    if not response.text:
-        raise Exception(
-            f"{model}: empty response"
-        )
-
-    print(f"{model} succeeded.")
-
-    return response.text
-
-
-# ==========================================
-# Chat
-# ==========================================
-
-@app.post("/chat")
-def chat(request: ChatRequest):
-
-    prompt = f"""
+SYSTEM_PROMPT = """
 أنت SCOUTRA AI.
 
 هويتك:
@@ -172,9 +155,119 @@ def chat(request: ChatRequest):
 ونبّه المستخدم لطلب المساعدة من شخص بالغ أو مختص
 عند وجود حالة خطيرة أو طارئة.
 
-سؤال المستخدم:
-{request.message}
+مهم جدًا:
+أنت لديك سياق للمحادثة السابقة يتم إرساله مع كل رسالة.
+استخدم هذا السياق لفهم كلام المستخدم والضمائر والإشارات
+مثل "ده" و"دي" و"الموضوع اللي كنا بنتكلم عنه"
+ولا تتعامل مع كل رسالة كأنها محادثة جديدة.
+
+إذا كان المستخدم يتابع موضوعًا سابقًا،
+فاستمر في نفس الموضوع بدل أن تطلب منه إعادة شرحه،
+ما دام السياق السابق واضحًا.
 """
+
+
+# ==========================================
+# Convert Chat History
+# ==========================================
+
+def build_contents(
+    history: list[ChatMessage],
+    current_message: str,
+):
+    contents = []
+
+    # نضيف الرسائل السابقة
+    for item in history:
+
+        role = item.role.lower().strip()
+
+        # Gemini يستخدم user / model
+        if role == "assistant":
+            role = "model"
+
+        if role not in ["user", "model"]:
+            continue
+
+        if not item.content.strip():
+            continue
+
+        contents.append(
+            types.Content(
+                role=role,
+                parts=[
+                    types.Part(
+                        text=item.content
+                    )
+                ],
+            )
+        )
+
+    # الرسالة الحالية
+    contents.append(
+        types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    text=current_message
+                )
+            ],
+        )
+    )
+
+    return contents
+
+
+# ==========================================
+# Gemini
+# ==========================================
+
+def ask_gemini(
+    model: str,
+    contents,
+):
+
+    print(f"Trying {model}...")
+
+    response = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
+        ),
+    )
+
+    if not response.text:
+        raise Exception(
+            f"{model}: empty response"
+        )
+
+    print(f"{model} succeeded.")
+
+    return response.text
+
+
+# ==========================================
+# Chat
+# ==========================================
+
+@app.post("/chat")
+def chat(request: ChatRequest):
+
+    print("========================================")
+    print("NEW CHAT REQUEST")
+    print(f"Current message: {request.message}")
+    print(f"History messages: {len(request.history)}")
+    print("========================================")
+
+    # ======================================
+    # Build conversation context
+    # ======================================
+
+    contents = build_contents(
+        history=request.history,
+        current_message=request.message,
+    )
 
     # ======================================
     # Fallback Models
@@ -198,7 +291,7 @@ def chat(request: ChatRequest):
 
             reply = ask_gemini(
                 model=model,
-                prompt=prompt,
+                contents=contents,
             )
 
             return {
