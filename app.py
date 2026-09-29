@@ -551,45 +551,62 @@ def build_contents(
     history: list[ChatMessage],
     current_message: str,
 ):
+    """
+    Build a Gemini request that is always guaranteed to end with a user turn.
+
+    Gemini can reject a request when the supplied conversation history has
+    an invalid turn sequence (for example, consecutive model turns or a
+    history that effectively ends on a model turn). To keep SCOUTRA AI's
+    memory reliable, we normalize the previous conversation into a single
+    user-context block and then send the current message as the final user
+    turn.
+    """
+
+    context_lines = []
+
+    for item in history:
+        role = item.role.lower().strip()
+        content = item.content.strip()
+
+        if not content:
+            continue
+
+        if role == "assistant" or role == "model":
+            speaker = "SCOUTRA AI"
+        elif role == "user":
+            speaker = "المستخدم"
+        else:
+            continue
+
+        context_lines.append(f"{speaker}: {content}")
 
     contents = []
 
-    # الرسائل السابقة
-    for item in history:
-
-        role = item.role.lower().strip()
-
-        # Gemini يستخدم model بدل assistant
-        if role == "assistant":
-            role = "model"
-
-        if role not in [
-            "user",
-            "model",
-        ]:
-            continue
-
-        if not item.content.strip():
-            continue
+    if context_lines:
+        history_text = "\n".join(context_lines)
 
         contents.append(
             types.Content(
-                role=role,
+                role="user",
                 parts=[
                     types.Part(
-                        text=item.content
+                        text=(
+                            "هذا سجل المحادثة السابقة للمحافظة على السياق. "
+                            "اعتبره سياقًا سابقًا وليس سؤالًا جديدًا.\n\n"
+                            + history_text
+                        )
                     )
                 ],
             )
         )
 
-    # الرسالة الحالية
+    # الرسالة الحالية يجب أن تكون آخر turn، وبصفة user.
     contents.append(
         types.Content(
             role="user",
             parts=[
                 types.Part(
-                    text=current_message
+                    text=current_message.strip()
                 )
             ],
         )
@@ -799,6 +816,18 @@ def chat(
                     "error": error_text[:1000],
                 }
             )
+
+            # أخطاء INVALID_ARGUMENT عادةً تكون بسبب شكل الطلب نفسه،
+            # وبالتالي إعادة المحاولة بنموذج آخر لن تصلح المشكلة.
+            if "INVALID_ARGUMENT" in error_text or "Requests ending with a model turn" in error_text:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "success": False,
+                        "error": "طلب SCOUTRA AI غير صالح.",
+                        "details": error_text[:1000],
+                    },
+                )
 
             continue
 
