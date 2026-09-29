@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import base64
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -76,12 +77,16 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = ""
 
     # سجل المحادثة السابقة
     history: list[ChatMessage] = Field(
         default_factory=list
     )
+
+    # الصورة المرفقة من تطبيق SCOUTRA
+    image_base64: str | None = None
+    image_mime_type: str | None = None
 
 
 # ==========================================
@@ -550,65 +555,109 @@ SYSTEM_PROMPT = """
 def build_contents(
     history: list[ChatMessage],
     current_message: str,
+    image_base64: str | None = None,
+    image_mime_type: str | None = None,
 ):
-    """
-    Build a Gemini request that is always guaranteed to end with a user turn.
-
-    Gemini can reject a request when the supplied conversation history has
-    an invalid turn sequence (for example, consecutive model turns or a
-    history that effectively ends on a model turn). To keep SCOUTRA AI's
-    memory reliable, we normalize the previous conversation into a single
-    user-context block and then send the current message as the final user
-    turn.
-    """
-
-    context_lines = []
-
-    for item in history:
-        role = item.role.lower().strip()
-        content = item.content.strip()
-
-        if not content:
-            continue
-
-        if role == "assistant" or role == "model":
-            speaker = "SCOUTRA AI"
-        elif role == "user":
-            speaker = "المستخدم"
-        else:
-            continue
-
-        context_lines.append(f"{speaker}: {content}")
 
     contents = []
 
-    if context_lines:
-        history_text = "\n".join(context_lines)
+    # الرسائل السابقة
+    for item in history:
+
+        role = item.role.lower().strip()
+
+        # Gemini يستخدم model بدل assistant
+        if role == "assistant":
+            role = "model"
+
+        if role not in [
+            "user",
+            "model",
+        ]:
+            continue
+
+        if not item.content.strip():
+            continue
 
         contents.append(
             types.Content(
-                role="user",
+                role=role,
                 parts=[
                     types.Part(
-                        text=(
-                            "هذا سجل المحادثة السابقة للمحافظة على السياق. "
-                            "اعتبره سياقًا سابقًا وليس سؤالًا جديدًا.\n\n"
-                            + history_text
-                        )
+                        text=item.content
                     )
                 ],
             )
         )
 
-    # الرسالة الحالية يجب أن تكون آخر turn، وبصفة user.
+    # الرسالة الحالية
+    current_parts = []
+
+    # إضافة الصورة إلى نفس رسالة المستخدم الحالية
+    if image_base64:
+        try:
+            image_bytes = base64.b64decode(
+                image_base64,
+                validate=True,
+            )
+
+            if len(image_bytes) > 8 * 1024 * 1024:
+                raise ValueError(
+                    "الصورة أكبر من الحد المسموح."
+                )
+
+            mime_type = (
+                image_mime_type
+                or "image/jpeg"
+            )
+
+            try:
+                image_part = types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type=mime_type,
+                )
+            except AttributeError:
+                image_part = types.Part(
+                    inline_data=types.Blob(
+                        data=image_bytes,
+                        mime_type=mime_type,
+                    )
+                )
+
+            current_parts.append(image_part)
+
+            print(
+                f"Image attached: {len(image_bytes)} bytes, "
+                f"{mime_type}"
+            )
+
+        except Exception as e:
+            print(f"Image processing failed: {e}")
+            raise ValueError(
+                "تعذر تجهيز الصورة للذكاء الاصطناعي."
+            )
+
+    text = current_message.strip()
+
+    if text:
+        current_parts.append(
+            types.Part(text=text)
+        )
+    elif image_base64:
+        current_parts.append(
+            types.Part(
+                text="حلل الصورة المرفقة وأخبرني بما تراه فيها."
+            )
+        )
+    else:
+        current_parts.append(
+            types.Part(text="مرحبا")
+        )
+
     contents.append(
         types.Content(
             role="user",
-            parts=[
-                types.Part(
-                    text=current_message.strip()
-                )
-            ],
+            parts=current_parts,
         )
     )
 
@@ -680,6 +729,11 @@ def chat(
     )
 
     print(
+        f"Image attached: "
+        f"{bool(request.image_base64)}"
+    )
+
+    print(
         "========================================"
     )
 
@@ -743,10 +797,22 @@ def chat(
     # Build Conversation Context
     # ======================================
 
-    contents = build_contents(
-        history=request.history,
-        current_message=request.message,
-    )
+    try:
+        contents = build_contents(
+            history=request.history,
+            current_message=request.message,
+            image_base64=request.image_base64,
+            image_mime_type=request.image_mime_type,
+        )
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "error": str(e),
+                "code": "INVALID_IMAGE",
+            },
+        )
 
 
     # ======================================
@@ -817,18 +883,6 @@ def chat(
                 }
             )
 
-            # أخطاء INVALID_ARGUMENT عادةً تكون بسبب شكل الطلب نفسه،
-            # وبالتالي إعادة المحاولة بنموذج آخر لن تصلح المشكلة.
-            if "INVALID_ARGUMENT" in error_text or "Requests ending with a model turn" in error_text:
-                return JSONResponse(
-                    status_code=400,
-                    content={
-                        "success": False,
-                        "error": "طلب SCOUTRA AI غير صالح.",
-                        "details": error_text[:1000],
-                    },
-                )
-
             continue
 
 
@@ -857,7 +911,7 @@ def chat(
         status_code=503,
         content={
             "success": False,
-            "error": "كل نماذج Gemini فشلت.",
-            "models": errors,
+            "error": "SCOUTRA AI مشغول حاليًا. جرّب مرة أخرى بعد لحظات.",
+            "code": "AI_BUSY",
         },
     )
