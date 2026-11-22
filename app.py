@@ -915,3 +915,208 @@ def chat(
             "code": "AI_BUSY",
         },
     )
+
+# ==========================================
+# Firebase Admin - Account Management
+# ==========================================
+
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import Header, HTTPException
+import firebase_admin
+from firebase_admin import credentials, auth as firebase_auth, firestore
+
+
+def initialize_firebase_admin():
+    """
+    Vercel:
+      FIREBASE_SERVICE_ACCOUNT_JSON = محتوى ملف Service Account بصيغة JSON.
+    Local:
+      serviceAccountKey.json بجوار app.py أو GOOGLE_APPLICATION_CREDENTIALS.
+    """
+    try:
+        if firebase_admin._apps:
+            firebase_app = firebase_admin.get_app()
+        else:
+            service_account_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+            credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+
+            if service_account_json:
+                service_account_info = json.loads(service_account_json)
+                firebase_credential = credentials.Certificate(service_account_info)
+            elif credentials_path and Path(credentials_path).is_file():
+                firebase_credential = credentials.Certificate(credentials_path)
+            else:
+                local_key = Path(__file__).resolve().parent / "serviceAccountKey.json"
+                if not local_key.is_file():
+                    raise FileNotFoundError(
+                        "Firebase credentials are missing. Set "
+                        "FIREBASE_SERVICE_ACCOUNT_JSON on Vercel."
+                    )
+                firebase_credential = credentials.Certificate(str(local_key))
+
+            firebase_app = firebase_admin.initialize_app(firebase_credential)
+
+        return firestore.client(app=firebase_app)
+
+    except Exception as e:
+        print(f"Firebase Admin initialization failed: {e}")
+        return None
+
+
+firestore_db = initialize_firebase_admin()
+
+
+def get_authenticated_admin(
+    authorization: Optional[str] = Header(default=None),
+):
+    if not firestore_db:
+        raise HTTPException(
+            status_code=503,
+            detail="خدمة إدارة الحسابات غير متاحة حاليًا. تحقق من إعداد Firebase على الخادم.",
+        )
+
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="يجب تسجيل الدخول أولًا")
+
+    id_token = authorization.split(" ", 1)[1].strip()
+    if not id_token:
+        raise HTTPException(status_code=401, detail="رمز الدخول غير صالح")
+
+    try:
+        decoded_token = firebase_auth.verify_id_token(id_token)
+        uid = decoded_token.get("uid")
+        if not uid:
+            raise HTTPException(status_code=401, detail="رمز الدخول غير صالح")
+
+        admin_snapshot = firestore_db.collection("users").document(uid).get()
+        if not admin_snapshot.exists:
+            raise HTTPException(status_code=403, detail="غير مصرح لك بتنفيذ هذا الإجراء")
+
+        admin_data = admin_snapshot.to_dict() or {}
+        if (
+            admin_data.get("role") != "super_admin"
+            or admin_data.get("status") != "approved"
+            or admin_data.get("is_active") is not True
+        ):
+            raise HTTPException(status_code=403, detail="هذه العملية متاحة للمسؤول العام فقط")
+
+        return uid
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Admin authentication failed: {e}")
+        raise HTTPException(status_code=401, detail="تعذر التحقق من صلاحية تسجيل الدخول")
+
+
+def serialize_firestore_value(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: serialize_firestore_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [serialize_firestore_value(item) for item in value]
+    if hasattr(value, "to_datetime"):
+        try:
+            return value.to_datetime().isoformat()
+        except Exception:
+            pass
+    return value
+
+
+# ==========================================
+# Account Requests API
+# ==========================================
+
+@app.get("/admin/account-requests")
+def get_account_requests(authorization: Optional[str] = Header(default=None)):
+    # نتحقق من رمز Firebase ومن صلاحية المسؤول العام قبل قراءة أي بيانات.
+    verified_admin_uid = get_authenticated_admin(authorization)
+    requests_query = (
+        firestore_db.collection("account_requests")
+        .where("status", "==", "pending")
+        .stream()
+    )
+
+    items = []
+    for request_doc in requests_query:
+        data = request_doc.to_dict() or {}
+        data["uid"] = data.get("uid") or request_doc.id
+        items.append(serialize_firestore_value(data))
+
+    return {"requests": items}
+
+
+@app.post("/admin/account-requests/{request_uid}/approve")
+def approve_account_request(
+    request_uid: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin_uid = get_authenticated_admin(authorization)
+
+    request_ref = firestore_db.collection("account_requests").document(request_uid)
+    user_ref = firestore_db.collection("users").document(request_uid)
+
+    request_snapshot = request_ref.get()
+    if not request_snapshot.exists:
+        raise HTTPException(status_code=404, detail="طلب الحساب غير موجود")
+
+    request_data = request_snapshot.to_dict() or {}
+    if request_data.get("status") != "pending":
+        raise HTTPException(status_code=409, detail="تمت مراجعة هذا الطلب بالفعل")
+
+    if user_ref.get().exists:
+        raise HTTPException(status_code=409, detail="يوجد ملف مستخدم لهذا الحساب بالفعل")
+
+    now = datetime.now(timezone.utc)
+    user_profile = {
+        "uid": request_uid,
+        "name": request_data.get("full_name", ""),
+        "email": request_data.get("email", ""),
+        "phone": request_data.get("phone", ""),
+        "role": "leader",
+        "status": "approved",
+        "is_active": True,
+        "created_at": request_data.get("created_at") or now,
+        "approved_at": now,
+        "approved_by": admin_uid,
+    }
+
+    batch = firestore_db.batch()
+    batch.set(user_ref, user_profile)
+    batch.update(request_ref, {
+        "status": "approved",
+        "reviewed_at": now,
+        "reviewed_by": admin_uid,
+    })
+    batch.commit()
+
+    return {"success": True, "message": "تم اعتماد الحساب بنجاح", "uid": request_uid}
+
+
+@app.post("/admin/account-requests/{request_uid}/reject")
+def reject_account_request(
+    request_uid: str,
+    authorization: Optional[str] = Header(default=None),
+):
+    admin_uid = get_authenticated_admin(authorization)
+
+    request_ref = firestore_db.collection("account_requests").document(request_uid)
+    request_snapshot = request_ref.get()
+
+    if not request_snapshot.exists:
+        raise HTTPException(status_code=404, detail="طلب الحساب غير موجود")
+
+    request_data = request_snapshot.to_dict() or {}
+    if request_data.get("status") != "pending":
+        raise HTTPException(status_code=409, detail="تمت مراجعة هذا الطلب بالفعل")
+
+    request_ref.update({
+        "status": "rejected",
+        "reviewed_at": datetime.now(timezone.utc),
+        "reviewed_by": admin_uid,
+    })
+
+    return {"success": True, "message": "تم رفض طلب الحساب", "uid": request_uid}
